@@ -12,6 +12,7 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 LINE_PUSH_API = "https://api.line.me/v2/bot/message/push"
+LINE_MULTICAST_API = "https://api.line.me/v2/bot/message/multicast"
 
 
 # ---------------------------------------------------------------------------
@@ -20,10 +21,12 @@ LINE_PUSH_API = "https://api.line.me/v2/bot/message/push"
 
 def notify_line(lottery: dict) -> bool:
     token = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
-    user_id = os.getenv("LINE_USER_ID")
+    # カンマ区切りで複数ユーザーID指定可能 例: Uaaa,Ubbb
+    raw_ids = os.getenv("LINE_USER_IDS", os.getenv("LINE_USER_ID", ""))
+    user_ids = [uid.strip() for uid in raw_ids.split(",") if uid.strip()]
 
-    if not token or not user_id:
-        logger.warning("LINE_CHANNEL_ACCESS_TOKEN または LINE_USER_ID が設定されていません")
+    if not token or not user_ids:
+        logger.warning("LINE_CHANNEL_ACCESS_TOKEN または LINE_USER_IDS が設定されていません")
         return False
 
     messages = [
@@ -45,11 +48,17 @@ def notify_line(lottery: dict) -> bool:
             "previewImageUrl": lottery["image"],
         })
 
-    payload = {"to": user_id, "messages": messages}
+    # 1人なら push、複数なら multicast
+    if len(user_ids) == 1:
+        payload = {"to": user_ids[0], "messages": messages}
+        api_url = LINE_PUSH_API
+    else:
+        payload = {"to": user_ids, "messages": messages}
+        api_url = LINE_MULTICAST_API
 
     try:
         resp = requests.post(
-            LINE_PUSH_API,
+            api_url,
             headers={
                 "Authorization": f"Bearer {token}",
                 "Content-Type": "application/json",
@@ -58,7 +67,7 @@ def notify_line(lottery: dict) -> bool:
             timeout=15,
         )
         resp.raise_for_status()
-        logger.info(f"LINE通知送信完了: {lottery['title']}")
+        logger.info(f"LINE通知送信完了 ({len(user_ids)}名): {lottery['title']}")
         return True
     except requests.RequestException as e:
         logger.error(f"LINE通知の送信に失敗しました: {e}")
