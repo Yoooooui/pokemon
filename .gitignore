@@ -1,0 +1,8 @@
+.env
+credentials.json
+token.pickle
+seen_lotteries.json
+lottery_monitor.log
+__pycache__/
+*.pyc
+.DS_Store
