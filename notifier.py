@@ -11,36 +11,50 @@ from dotenv import load_dotenv
 load_dotenv()
 logger = logging.getLogger(__name__)
 
-LINE_NOTIFY_API = "https://notify-api.line.me/api/notify"
+LINE_PUSH_API = "https://api.line.me/v2/bot/message/push"
 
 
 # ---------------------------------------------------------------------------
-# LINE Notify
+# LINE Messaging API（LINE Bot）
 # ---------------------------------------------------------------------------
 
 def notify_line(lottery: dict) -> bool:
-    token = os.getenv("LINE_NOTIFY_TOKEN")
-    if not token:
-        logger.warning("LINE_NOTIFY_TOKEN が設定されていません")
+    token = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
+    user_id = os.getenv("LINE_USER_ID")
+
+    if not token or not user_id:
+        logger.warning("LINE_CHANNEL_ACCESS_TOKEN または LINE_USER_ID が設定されていません")
         return False
 
-    message = (
-        f"\n🎰 ポケモンセンター 抽選開始!\n"
-        f"【{lottery['title']}】\n"
-        f"期間: {lottery['period']}\n"
-        f"URL: {lottery['url']}"
-    )
+    messages = [
+        {
+            "type": "text",
+            "text": (
+                f"🎰 ポケモンセンター 抽選開始!\n"
+                f"【{lottery['title']}】\n"
+                f"期間: {lottery['period']}\n"
+                f"URL: {lottery['url']}"
+            ),
+        }
+    ]
 
-    payload = {"message": message}
     if lottery.get("image"):
-        payload["imageThumbnail"] = lottery["image"]
-        payload["imageFullsize"] = lottery["image"]
+        messages.append({
+            "type": "image",
+            "originalContentUrl": lottery["image"],
+            "previewImageUrl": lottery["image"],
+        })
+
+    payload = {"to": user_id, "messages": messages}
 
     try:
         resp = requests.post(
-            LINE_NOTIFY_API,
-            headers={"Authorization": f"Bearer {token}"},
-            data=payload,
+            LINE_PUSH_API,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
             timeout=15,
         )
         resp.raise_for_status()
