@@ -146,23 +146,26 @@ def _get_calendar_service():
 
 
 def notify_calendar(lottery: dict) -> bool:
-    calendar_id = os.getenv("GOOGLE_CALENDAR_ID", "primary")
+    calendar_id = os.getenv("GOOGLE_CALENDAR_ID", "qitengyangyi93@gmail.com")
 
     service = _get_calendar_service()
     if not service:
         return False
 
-    # 抽選期間をパースできない場合は当日終日イベントを登録
-    now = datetime.now()
+    # 抽選期間をパースできない場合は当日終日イベントを登録（Asia/Tokyo固定）
+    import zoneinfo
+    tz = zoneinfo.ZoneInfo("Asia/Tokyo")
+    now = datetime.now(tz)
     event = {
         "summary": f"🎰 ポケモン抽選: {lottery['title']}",
         "description": (
-            f"ポケモンセンターで抽選が始まりました。\n\n"
+            f"ポケモンセンターで抽選が始まりました！\n\n"
             f"期間: {lottery['period']}\n"
-            f"URL: {lottery['url']}"
+            f"URL: {lottery['url']}\n\n"
+            f"検出日時: {now.strftime('%Y/%m/%d %H:%M')} (JST)"
         ),
-        "start": {"date": now.strftime("%Y-%m-%d")},
-        "end": {"date": (now + timedelta(days=1)).strftime("%Y-%m-%d")},
+        "start": {"date": now.strftime("%Y-%m-%d"), "timeZone": "Asia/Tokyo"},
+        "end": {"date": (now + timedelta(days=1)).strftime("%Y-%m-%d"), "timeZone": "Asia/Tokyo"},
         "source": {"title": "ポケモンセンター抽選通知", "url": lottery["url"]},
         "reminders": {
             "useDefault": False,
