@@ -4,6 +4,7 @@ token.pickle
 seen_lotteries.json
 line_token_cache.json
 lottery_monitor.log
+card_report.html
 __pycache__/
 *.pyc
 .DS_Store
