@@ -2,6 +2,7 @@
 credentials.json
 token.pickle
 seen_lotteries.json
+line_token_cache.json
 lottery_monitor.log
 __pycache__/
 *.pyc

@@ -1,4 +1,5 @@
 import os
+import json
 import smtplib
 import logging
 from email.mime.text import MIMEText
@@ -13,6 +14,53 @@ logger = logging.getLogger(__name__)
 
 LINE_PUSH_API = "https://api.line.me/v2/bot/message/push"
 LINE_MULTICAST_API = "https://api.line.me/v2/bot/message/multicast"
+LINE_TOKEN_API = "https://api.line.me/v2/oauth/accessToken"
+LINE_TOKEN_CACHE = "line_token_cache.json"
+
+
+def _get_line_access_token() -> str | None:
+    """Channel ID + Secret からアクセストークンを自動取得・キャッシュする"""
+    channel_id = os.getenv("LINE_CHANNEL_ID")
+    channel_secret = os.getenv("LINE_CHANNEL_SECRET")
+
+    if not channel_id or not channel_secret:
+        logger.warning("LINE_CHANNEL_ID または LINE_CHANNEL_SECRET が設定されていません")
+        return None
+
+    # キャッシュ確認
+    if os.path.exists(LINE_TOKEN_CACHE):
+        with open(LINE_TOKEN_CACHE, "r") as f:
+            cache = json.load(f)
+        expires_at = datetime.fromisoformat(cache.get("expires_at", "2000-01-01"))
+        if datetime.now() < expires_at:
+            return cache["token"]
+
+    # 新規取得
+    try:
+        resp = requests.post(
+            LINE_TOKEN_API,
+            data={
+                "grant_type": "client_credentials",
+                "client_id": channel_id,
+                "client_secret": channel_secret,
+            },
+            timeout=15,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        token = data["access_token"]
+        expires_in = data.get("expires_in", 2592000)  # デフォルト30日
+
+        # 期限の1日前にキャッシュ切れにする
+        expires_at = datetime.now() + timedelta(seconds=expires_in - 86400)
+        with open(LINE_TOKEN_CACHE, "w") as f:
+            json.dump({"token": token, "expires_at": expires_at.isoformat()}, f)
+
+        logger.info("LINEアクセストークンを取得しました")
+        return token
+    except requests.RequestException as e:
+        logger.error(f"LINEトークンの取得に失敗しました: {e}")
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -20,9 +68,9 @@ LINE_MULTICAST_API = "https://api.line.me/v2/bot/message/multicast"
 # ---------------------------------------------------------------------------
 
 def notify_line(lottery: dict) -> bool:
-    token = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
+    token = _get_line_access_token()
     # カンマ区切りで複数ユーザーID指定可能 例: Uaaa,Ubbb
-    raw_ids = os.getenv("LINE_USER_IDS", os.getenv("LINE_USER_ID", ""))
+    raw_ids = os.getenv("LINE_USER_IDS", "")
     user_ids = [uid.strip() for uid in raw_ids.split(",") if uid.strip()]
 
     if not token or not user_ids:
