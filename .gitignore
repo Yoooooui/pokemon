@@ -5,6 +5,7 @@ seen_lotteries.json
 line_token_cache.json
 lottery_monitor.log
 card_report.html
+card_price_history.json
 __pycache__/
 *.pyc
 .DS_Store

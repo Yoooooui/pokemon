@@ -2,13 +2,18 @@
 ポケカ価格分析
 海外（TCGPlayer）と日本（カードラッシュ）の価格を比較し、
 高騰カード・割安カードを抽出する。
+
+海外価格が先行して上がる → 日本価格が後追いで上がる傾向を利用し、
+「日本価格高騰予兆カード」を早期検出して通知する。
 """
 
+import json
 import logging
 import os
 import time
 import re
 from dataclasses import dataclass, field
+from datetime import datetime
 
 import requests
 from bs4 import BeautifulSoup
@@ -16,6 +21,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 logger = logging.getLogger(__name__)
+
+PRICE_HISTORY_FILE = "card_price_history.json"
 
 POKEMON_TCG_API = "https://api.pokemontcg.io/v2/cards"
 CARDRUSH_SEARCH_URL = "https://www.cardrush-pokemon.jp/product-list?name={}"
@@ -33,6 +40,12 @@ HEADERS = {
 DEFAULT_USD_TO_JPY = 150.0
 
 
+ALERT_NONE = "none"
+ALERT_WATCH = "watch"    # 海外が日本の1.5〜2倍（要注目）
+ALERT_HIGH  = "high"     # 海外が日本の2倍以上（高騰予兆）
+ALERT_SURGE = "surge"    # 前回比で海外価格が急騰（緊急）
+
+
 @dataclass
 class CardPrice:
     name_en: str
@@ -45,13 +58,29 @@ class CardPrice:
     japan_source: str           # 価格出典
     card_image: str             # カード画像URL
     tcg_url: str                # TCGPlayerページ
-    arbitrage_ratio: float = field(init=False)   # 海外/日本 倍率
+    prev_tcg_usd: float = 0.0   # 前回の海外価格（履歴から）
+    arbitrage_ratio: float = field(init=False)
+    price_change_pct: float = field(init=False)   # 海外価格の前回比変化率（%）
+    alert_level: str = field(init=False)          # 予兆レベル
 
     def __post_init__(self):
-        if self.japan_price_jpy > 0:
-            self.arbitrage_ratio = self.tcg_market_jpy / self.japan_price_jpy
+        self.arbitrage_ratio = (
+            self.tcg_market_jpy / self.japan_price_jpy
+            if self.japan_price_jpy > 0 else 0.0
+        )
+        self.price_change_pct = (
+            (self.tcg_market_usd - self.prev_tcg_usd) / self.prev_tcg_usd * 100
+            if self.prev_tcg_usd > 0 else 0.0
+        )
+        # 予兆レベルを判定
+        if self.price_change_pct >= 20:
+            self.alert_level = ALERT_SURGE   # 海外が急騰（緊急通知）
+        elif self.arbitrage_ratio >= 2.0:
+            self.alert_level = ALERT_HIGH    # 海外が日本の2倍以上
+        elif self.arbitrage_ratio >= 1.5:
+            self.alert_level = ALERT_WATCH   # 要注目
         else:
-            self.arbitrage_ratio = 0.0
+            self.alert_level = ALERT_NONE
 
 
 def get_usd_to_jpy() -> float:
@@ -179,6 +208,32 @@ def translate_name(name_en: str) -> str:
     return ""
 
 
+# ---------------------------------------------------------------------------
+# 価格履歴（前回比較用）
+# ---------------------------------------------------------------------------
+
+def load_price_history() -> dict:
+    if not os.path.exists(PRICE_HISTORY_FILE):
+        return {}
+    with open(PRICE_HISTORY_FILE, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def save_price_history(history: dict) -> None:
+    with open(PRICE_HISTORY_FILE, "w", encoding="utf-8") as f:
+        json.dump(history, f, ensure_ascii=False, indent=2)
+
+
+def update_history(history: dict, card_key: str, usd_price: float) -> float:
+    """履歴を更新し、前回価格を返す"""
+    prev = history.get(card_key, {}).get("usd", 0.0)
+    history[card_key] = {
+        "usd": usd_price,
+        "updated_at": datetime.now().isoformat(),
+    }
+    return prev
+
+
 def analyze(
     min_price_usd: float = 20.0,
     min_arbitrage: float = 1.5,
@@ -196,6 +251,7 @@ def analyze(
     logger.info(f"為替レート: 1USD = {rate}円")
 
     raw_cards = fetch_english_cards(min_price_usd=min_price_usd)
+    history = load_price_history()
     results: list[CardPrice] = []
 
     for raw in raw_cards[:limit]:
@@ -210,11 +266,15 @@ def analyze(
         jpy_price = usd_price * rate
         name_en = raw.get("name", "")
         name_ja = translate_name(name_en)
+        card_key = f"{raw.get('id', name_en)}"
+
+        # 前回価格と比較
+        prev_usd = update_history(history, card_key, usd_price)
 
         japan_price, japan_src = 0, ""
         if name_ja:
             japan_price, japan_src = search_japan_price_cardrush(name_ja)
-            time.sleep(0.5)  # レートリミット対策
+            time.sleep(0.5)
 
         card = CardPrice(
             name_en=name_en,
@@ -227,10 +287,21 @@ def analyze(
             japan_source=japan_src,
             card_image=raw.get("images", {}).get("large", ""),
             tcg_url=get_tcg_url(tcgplayer),
+            prev_tcg_usd=prev_usd,
         )
         results.append(card)
 
-    # 海外価格の高い順にソート
-    results.sort(key=lambda c: c.tcg_market_usd, reverse=True)
-    logger.info(f"分析完了: {len(results)} 件")
+    save_price_history(history)
+
+    # 予兆レベル優先、同レベル内は海外価格の高い順
+    level_order = {ALERT_SURGE: 0, ALERT_HIGH: 1, ALERT_WATCH: 2, ALERT_NONE: 3}
+    results.sort(key=lambda c: (level_order[c.alert_level], -c.tcg_market_usd))
+    logger.info(f"分析完了: {len(results)} 件 "
+                f"(緊急:{sum(1 for c in results if c.alert_level==ALERT_SURGE)} / "
+                f"予兆:{sum(1 for c in results if c.alert_level==ALERT_HIGH)})")
     return results
+
+
+def get_alert_cards(cards: list[CardPrice]) -> list[CardPrice]:
+    """通知が必要な予兆カードのみ返す"""
+    return [c for c in cards if c.alert_level in (ALERT_SURGE, ALERT_HIGH)]

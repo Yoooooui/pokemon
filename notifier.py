@@ -272,3 +272,122 @@ def notify_all(lottery: dict) -> None:
     for channel, ok in results.items():
         status = "OK" if ok else "FAILED"
         logger.info(f"  {channel}: {status}")
+
+
+# ---------------------------------------------------------------------------
+# ポケカ高騰予兆通知
+# ---------------------------------------------------------------------------
+
+def notify_card_surge_line(cards: list) -> bool:
+    """高騰予兆カードをLINEに通知"""
+    from card_analyzer import ALERT_SURGE, ALERT_HIGH
+    token = _get_line_access_token()
+    raw_ids = os.getenv("LINE_USER_IDS", "")
+    user_ids = [uid.strip() for uid in raw_ids.split(",") if uid.strip()]
+    if not token or not user_ids:
+        return False
+
+    surge = [c for c in cards if c.alert_level == ALERT_SURGE]
+    high  = [c for c in cards if c.alert_level == ALERT_HIGH]
+
+    lines = []
+    if surge:
+        lines.append("🚨 海外価格が急騰しています（日本価格も近く上昇予測）")
+        for c in surge[:3]:
+            lines.append(
+                f"▶ {c.name_ja}（{c.name_en}）\n"
+                f"  海外: ${c.tcg_market_usd} (+{c.price_change_pct:.0f}%)\n"
+                f"  日本: {'¥'+f'{c.japan_price_jpy:,}' if c.japan_price_jpy else 'データなし'}"
+            )
+    if high:
+        lines.append("\n⚠️ 海外が日本の2倍以上のカード")
+        for c in high[:3]:
+            lines.append(
+                f"▶ {c.name_ja} — 海外 ${c.tcg_market_usd} / "
+                f"倍率 ×{c.arbitrage_ratio:.1f}"
+            )
+
+    if not lines:
+        return True
+
+    message = "\n".join(lines)
+    api_url = LINE_MULTICAST_API if len(user_ids) > 1 else LINE_PUSH_API
+    payload_key = "to" if len(user_ids) == 1 else "to"
+    payload = {
+        "to": user_ids[0] if len(user_ids) == 1 else user_ids,
+        "messages": [{"type": "text", "text": message}],
+    }
+    if len(user_ids) > 1:
+        api_url = LINE_MULTICAST_API
+
+    try:
+        resp = requests.post(
+            api_url,
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            json=payload,
+            timeout=15,
+        )
+        resp.raise_for_status()
+        logger.info(f"ポケカ高騰予兆LINE通知完了 ({len(surge)}件急騰/{len(high)}件予兆)")
+        return True
+    except requests.RequestException as e:
+        logger.error(f"ポケカ高騰予兆LINE通知失敗: {e}")
+        return False
+
+
+def notify_card_surge_gmail(cards: list) -> bool:
+    """高騰予兆カードをGmailに通知"""
+    from card_analyzer import ALERT_SURGE, ALERT_HIGH
+    gmail_address = os.getenv("GMAIL_ADDRESS")
+    app_password  = os.getenv("GMAIL_APP_PASSWORD")
+    to_address    = os.getenv("NOTIFY_EMAIL_TO", gmail_address)
+    if not gmail_address or not app_password:
+        return False
+
+    surge = [c for c in cards if c.alert_level == ALERT_SURGE]
+    high  = [c for c in cards if c.alert_level == ALERT_HIGH]
+    if not surge and not high:
+        return True
+
+    subject = f"【ポケカ価格速報】急騰{len(surge)}件 / 予兆{len(high)}件"
+
+    rows = ""
+    for c in surge + high:
+        badge = "🚨 急騰" if c.alert_level == ALERT_SURGE else "⚠️ 予兆"
+        jp = f"¥{c.japan_price_jpy:,}" if c.japan_price_jpy else "-"
+        chg = f"+{c.price_change_pct:.0f}%" if c.prev_tcg_usd > 0 else "初回"
+        rows += (
+            f"<tr><td>{badge}</td><td>{c.name_ja}<br><small>{c.name_en}</small></td>"
+            f"<td>${c.tcg_market_usd} ({chg})</td><td>{jp}</td>"
+            f"<td>×{c.arbitrage_ratio:.1f}</td>"
+            f"<td><a href='{c.tcg_url}'>見る</a></td></tr>"
+        )
+
+    html = f"""<html><body>
+<h2>🎴 ポケカ海外価格 高騰予兆レポート</h2>
+<table border="1" cellpadding="6" style="border-collapse:collapse">
+  <tr style="background:#f0f0f0">
+    <th>状態</th><th>カード名</th><th>海外価格</th><th>日本価格</th><th>倍率</th><th>リンク</th>
+  </tr>
+  {rows}
+</table>
+<p style="color:#888;font-size:0.85em">
+海外価格が先行上昇すると、数週間〜数ヶ月後に日本価格も追随する傾向があります。
+</p>
+</body></html>"""
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"]    = gmail_address
+    msg["To"]      = to_address
+    msg.attach(MIMEText(html, "html", "utf-8"))
+
+    try:
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
+            smtp.login(gmail_address, app_password)
+            smtp.sendmail(gmail_address, to_address, msg.as_bytes())
+        logger.info("ポケカ高騰予兆Gmail通知完了")
+        return True
+    except smtplib.SMTPException as e:
+        logger.error(f"ポケカ高騰予兆Gmail通知失敗: {e}")
+        return False
