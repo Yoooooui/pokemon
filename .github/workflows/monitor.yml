@@ -1,0 +1,45 @@
+name: ポケモンセンター抽選監視
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'   # 30分ごとに実行
+  workflow_dispatch:          # 手動実行ボタン
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Python セットアップ
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: パッケージインストール
+        run: pip install -r requirements.txt
+
+      - name: .env ファイルを生成
+        run: |
+          cat > .env << EOF
+          LINE_CHANNEL_ID=${{ secrets.LINE_CHANNEL_ID }}
+          LINE_CHANNEL_SECRET=${{ secrets.LINE_CHANNEL_SECRET }}
+          LINE_USER_IDS=${{ secrets.LINE_USER_IDS }}
+          GMAIL_ADDRESS=${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD=${{ secrets.GMAIL_APP_PASSWORD }}
+          NOTIFY_EMAIL_TO=${{ secrets.NOTIFY_EMAIL_TO }}
+          GOOGLE_CALENDAR_ID=${{ secrets.GOOGLE_CALENDAR_ID }}
+          EOF
+
+      - name: 抽選チェック実行
+        run: python main.py --once
+
+      - name: seen_lotteries.json を保存
+        uses: actions/cache@v4
+        with:
+          path: seen_lotteries.json
+          key: seen-lotteries-${{ github.run_id }}
+          restore-keys: |
+            seen-lotteries-
