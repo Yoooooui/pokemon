@@ -9,3 +9,6 @@ card_price_history.json
 __pycache__/
 *.pyc
 .DS_Store
+images/
+instagram_post_log.json
+instagram_bot.log
