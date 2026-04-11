@@ -19,12 +19,17 @@ LINE_TOKEN_CACHE = "line_token_cache.json"
 
 
 def _get_line_access_token() -> str | None:
-    """Channel ID + Secret からアクセストークンを自動取得・キャッシュする"""
+    """LINE_ACCESS_TOKEN（長期）またはChannel ID+Secretからトークンを取得する"""
+    # 長期トークンが直接設定されていればそれを使う
+    direct_token = os.getenv("LINE_ACCESS_TOKEN")
+    if direct_token:
+        return direct_token
+
     channel_id = os.getenv("LINE_CHANNEL_ID")
     channel_secret = os.getenv("LINE_CHANNEL_SECRET")
 
     if not channel_id or not channel_secret:
-        logger.warning("LINE_CHANNEL_ID または LINE_CHANNEL_SECRET が設定されていません")
+        logger.warning("LINE_ACCESS_TOKEN または LINE_CHANNEL_ID/SECRET が設定されていません")
         return None
 
     # キャッシュ確認
@@ -49,9 +54,8 @@ def _get_line_access_token() -> str | None:
         resp.raise_for_status()
         data = resp.json()
         token = data["access_token"]
-        expires_in = data.get("expires_in", 2592000)  # デフォルト30日
+        expires_in = data.get("expires_in", 2592000)
 
-        # 期限の1日前にキャッシュ切れにする
         expires_at = datetime.now() + timedelta(seconds=expires_in - 86400)
         with open(LINE_TOKEN_CACHE, "w") as f:
             json.dump({"token": token, "expires_at": expires_at.isoformat()}, f)

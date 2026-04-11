@@ -4,26 +4,29 @@ import os, requests, json
 
 load_dotenv()
 
-channel_id = os.getenv("LINE_CHANNEL_ID")
-channel_secret = os.getenv("LINE_CHANNEL_SECRET")
 user_ids = os.getenv("LINE_USER_IDS", "")
 
-print("=== Step 1: トークン取得 ===")
-try:
-    resp = requests.post(
-        "https://api.line.me/v2/oauth/accessToken",
-        data={
-            "grant_type": "client_credentials",
-            "client_id": channel_id,
-            "client_secret": channel_secret,
-        },
-        timeout=15,
-    )
-    print(f"HTTPステータス: {resp.status_code}")
-    token = resp.json().get("access_token", "") if resp.ok else ""
-except Exception as e:
-    print(f"接続エラー: {e}")
-    token = ""
+print("=== Step 1: トークン確認 ===")
+token = os.getenv("LINE_ACCESS_TOKEN", "")
+if token:
+    print(f"✅ 長期トークンを使用: {token[:20]}...")
+else:
+    channel_id = os.getenv("LINE_CHANNEL_ID")
+    channel_secret = os.getenv("LINE_CHANNEL_SECRET")
+    try:
+        resp = requests.post(
+            "https://api.line.me/v2/oauth/accessToken",
+            data={
+                "grant_type": "client_credentials",
+                "client_id": channel_id,
+                "client_secret": channel_secret,
+            },
+            timeout=15,
+        )
+        print(f"HTTPステータス: {resp.status_code} / レスポンス: {resp.text[:200]}")
+        token = resp.json().get("access_token", "") if resp.ok else ""
+    except Exception as e:
+        print(f"接続エラー: {e}")
 
 if not token:
     print("❌ トークン取得失敗")
