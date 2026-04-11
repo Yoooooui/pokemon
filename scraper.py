@@ -8,7 +8,13 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
-LOTTERY_URL = "https://www.pokemoncenter-online.com/special/lottery/"
+# 候補URLを順に試す（サイト改修に備えて複数登録）
+LOTTERY_URLS = [
+    "https://www.pokemoncenter-online.com/category/lottery/",
+    "https://www.pokemoncenter-online.com/special/lottery/",
+    "https://www.pokemoncenter-online.com/c/lottery",
+    "https://www.pokemoncenter-online.com/search?q=抽選&type=product",
+]
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -31,23 +37,37 @@ def save_seen_lotteries(seen: set) -> None:
         json.dump(list(seen), f, ensure_ascii=False, indent=2)
 
 
-def fetch_lotteries() -> list[dict]:
-    """ポケモンセンターの抽選一覧を取得する"""
+def _try_fetch(url: str) -> BeautifulSoup | None:
+    """URLを取得してBeautifulSoupを返す。失敗したらNone"""
     try:
-        resp = requests.get(LOTTERY_URL, headers=HEADERS, timeout=30)
+        resp = requests.get(url, headers=HEADERS, timeout=30)
+        if resp.status_code == 404:
+            return None
         resp.raise_for_status()
-    except requests.RequestException as e:
-        logger.error(f"抽選ページの取得に失敗しました: {e}")
+        return BeautifulSoup(resp.text, "lxml")
+    except requests.RequestException:
+        return None
+
+
+def fetch_lotteries() -> list[dict]:
+    """ポケモンセンターの抽選一覧を取得する（複数URLを順に試す）"""
+    soup = None
+    used_url = ""
+    for url in LOTTERY_URLS:
+        soup = _try_fetch(url)
+        if soup:
+            used_url = url
+            logger.info(f"抽選ページ取得成功: {url}")
+            break
+
+    if not soup:
+        logger.error("すべての抽選URLで取得に失敗しました")
         return []
 
-    soup = BeautifulSoup(resp.text, "lxml")
     lotteries = []
-
-    # 抽選商品のカード要素を探す（サイト構造に合わせて調整）
     items = soup.select(".lottery-item, .product-item, article.item")
     if not items:
-        # フォールバック: より広い検索
-        items = soup.select("[class*='lottery'], [class*='raffle']")
+        items = soup.select("[class*='lottery'], [class*='raffle'], [class*='product']")
 
     for item in items:
         title_el = item.select_one("h2, h3, .item-name, .product-name, [class*='title']")
@@ -56,12 +76,11 @@ def fetch_lotteries() -> list[dict]:
         img_el = item.select_one("img")
 
         title = title_el.get_text(strip=True) if title_el else "タイトル不明"
-        link = link_el["href"] if link_el else LOTTERY_URL
+        link = link_el["href"] if link_el else used_url
         if link and not link.startswith("http"):
             link = "https://www.pokemoncenter-online.com" + link
         period = date_el.get_text(strip=True) if date_el else "期間不明"
         image = img_el.get("src", "") if img_el else ""
-
         lottery_id = link.rstrip("/").split("/")[-1] or title
 
         lotteries.append({
