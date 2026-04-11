@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 ポケモンセンター抽選監視・通知スクリプト
 

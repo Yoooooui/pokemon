@@ -1,3 +1,4 @@
+from __future__ import annotations
 import requests
 from bs4 import BeautifulSoup
 import json

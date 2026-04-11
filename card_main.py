@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 ポケカ価格分析の実行スクリプト
 

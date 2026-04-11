@@ -1,3 +1,4 @@
+from __future__ import annotations
 """HTMLレポートを生成する"""
 
 import os

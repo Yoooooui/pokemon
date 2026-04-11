@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 ポケカ価格分析
 海外（TCGPlayer）と日本（カードラッシュ）の価格を比較し、
