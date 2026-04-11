@@ -13,34 +13,83 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Discord Webhook
-# ---------------------------------------------------------------------------
+LINE_PUSH_API = "https://api.line.me/v2/bot/message/push"
+LINE_MULTICAST_API = "https://api.line.me/v2/bot/message/multicast"
+LINE_TOKEN_API = "https://api.line.me/v2/oauth/accessToken"
+LINE_TOKEN_CACHE = "line_token_cache.json"
 
-def notify_discord(lottery: dict) -> bool:
-    webhook_url = os.getenv("DISCORD_WEBHOOK_URL")
-    if not webhook_url:
-        logger.warning("DISCORD_WEBHOOK_URL が設定されていません")
-        return False
 
-    content = (
-        f"🎰 **ポケモンセンター 抽選開始！**\n"
-        f"**{lottery['title']}**\n"
-        f"期間: {lottery['period']}\n"
-        f"{lottery['url']}"
-    )
+def _get_line_access_token() -> str | None:
+    direct_token = os.getenv("LINE_ACCESS_TOKEN")
+    if direct_token:
+        return direct_token
+
+    channel_id = os.getenv("LINE_CHANNEL_ID")
+    channel_secret = os.getenv("LINE_CHANNEL_SECRET")
+    if not channel_id or not channel_secret:
+        logger.warning("LINE_ACCESS_TOKEN または LINE_CHANNEL_ID/SECRET が未設定")
+        return None
+
+    if os.path.exists(LINE_TOKEN_CACHE):
+        with open(LINE_TOKEN_CACHE, "r") as f:
+            cache = json.load(f)
+        if datetime.now() < datetime.fromisoformat(cache.get("expires_at", "2000-01-01")):
+            return cache["token"]
 
     try:
         resp = requests.post(
-            webhook_url,
-            json={"content": content},
+            LINE_TOKEN_API,
+            data={"grant_type": "client_credentials",
+                  "client_id": channel_id,
+                  "client_secret": channel_secret},
             timeout=15,
         )
         resp.raise_for_status()
-        logger.info(f"Discord通知送信完了: {lottery['title']}")
+        token = resp.json()["access_token"]
+        expires_in = resp.json().get("expires_in", 2592000)
+        expires_at = datetime.now() + timedelta(seconds=expires_in - 86400)
+        with open(LINE_TOKEN_CACHE, "w") as f:
+            json.dump({"token": token, "expires_at": expires_at.isoformat()}, f)
+        return token
+    except requests.RequestException as e:
+        logger.error(f"LINEトークン取得失敗: {e}")
+        return None
+
+
+# ---------------------------------------------------------------------------
+# LINE Messaging API
+# ---------------------------------------------------------------------------
+
+def notify_line(lottery: dict) -> bool:
+    token = _get_line_access_token()
+    raw_ids = os.getenv("LINE_USER_IDS", "")
+    user_ids = [uid.strip() for uid in raw_ids.split(",") if uid.strip()]
+    if not token or not user_ids:
+        logger.warning("LINEトークンまたはユーザーIDが未設定")
+        return False
+
+    text = (
+        f"🎰 ポケモンセンター 抽選開始!\n"
+        f"【{lottery['title']}】\n"
+        f"期間: {lottery['period']}\n"
+        f"URL: {lottery['url']}"
+    )
+    api_url = LINE_PUSH_API if len(user_ids) == 1 else LINE_MULTICAST_API
+    payload = {
+        "to": user_ids[0] if len(user_ids) == 1 else user_ids,
+        "messages": [{"type": "text", "text": text}],
+    }
+    try:
+        resp = requests.post(
+            api_url,
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            json=payload, timeout=15,
+        )
+        resp.raise_for_status()
+        logger.info(f"LINE通知送信完了: {lottery['title']}")
         return True
     except requests.RequestException as e:
-        logger.error(f"Discord通知の送信に失敗しました: {e}")
+        logger.error(f"LINE通知失敗: {e}")
         return False
 # Gmail
 # ---------------------------------------------------------------------------
@@ -184,7 +233,7 @@ def notify_calendar(lottery: dict) -> bool:
 def notify_all(lottery: dict) -> None:
     logger.info(f"通知送信開始: {lottery['title']}")
     results = {
-        "Discord": notify_discord(lottery),
+        "LINE": notify_line(lottery),
         "Gmail": notify_gmail(lottery),
         "Calendar": notify_calendar(lottery),
     }
@@ -197,11 +246,13 @@ def notify_all(lottery: dict) -> None:
 # ポケカ高騰予兆通知
 # ---------------------------------------------------------------------------
 
-def notify_card_surge_discord(cards: list) -> bool:
-    """高騰予兆カードをDiscordに通知"""
+def notify_card_surge_line(cards: list) -> bool:
+    """高騰予兆カードをLINEに通知"""
     from card_analyzer import ALERT_SURGE, ALERT_HIGH
-    webhook_url = os.getenv("DISCORD_WEBHOOK_URL")
-    if not webhook_url:
+    token = _get_line_access_token()
+    raw_ids = os.getenv("LINE_USER_IDS", "")
+    user_ids = [uid.strip() for uid in raw_ids.split(",") if uid.strip()]
+    if not token or not user_ids:
         return False
 
     surge = [c for c in cards if c.alert_level == ALERT_SURGE]
@@ -209,31 +260,36 @@ def notify_card_surge_discord(cards: list) -> bool:
     if not surge and not high:
         return True
 
-    lines = ["🎴 **ポケカ価格速報**"]
+    lines = ["🎴 ポケカ価格速報"]
     if surge:
-        lines.append("🚨 **海外価格が急騰！日本価格も近く上昇予測**")
+        lines.append("🚨 海外価格が急騰！日本価格も近く上昇予測")
         for c in surge[:3]:
             lines.append(
-                f"▶ **{c.name_ja}**（{c.name_en}）\n"
-                f"　海外: ${c.tcg_market_usd} (+{c.price_change_pct:.0f}%) "
+                f"▶ {c.name_ja}（{c.name_en}）\n"
+                f"  海外: ${c.tcg_market_usd} (+{c.price_change_pct:.0f}%) "
                 f"/ 日本: {'¥'+f'{c.japan_price_jpy:,}' if c.japan_price_jpy else 'データなし'}"
             )
     if high:
-        lines.append("⚠️ **海外が日本の2倍以上のカード**")
+        lines.append("⚠️ 海外が日本の2倍以上のカード")
         for c in high[:3]:
-            lines.append(f"▶ **{c.name_ja}** — 海外 ${c.tcg_market_usd} / ×{c.arbitrage_ratio:.1f}")
+            lines.append(f"▶ {c.name_ja} — 海外 ${c.tcg_market_usd} / ×{c.arbitrage_ratio:.1f}")
 
+    api_url = LINE_PUSH_API if len(user_ids) == 1 else LINE_MULTICAST_API
+    payload = {
+        "to": user_ids[0] if len(user_ids) == 1 else user_ids,
+        "messages": [{"type": "text", "text": "\n".join(lines)}],
+    }
     try:
         resp = requests.post(
-            webhook_url,
-            json={"content": "\n".join(lines)},
-            timeout=15,
+            api_url,
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            json=payload, timeout=15,
         )
         resp.raise_for_status()
-        logger.info(f"ポケカ高騰予兆Discord通知完了 ({len(surge)}件急騰/{len(high)}件予兆)")
+        logger.info(f"ポケカ高騰予兆LINE通知完了")
         return True
     except requests.RequestException as e:
-        logger.error(f"ポケカ高騰予兆Discord通知失敗: {e}")
+        logger.error(f"ポケカ高騰予兆LINE通知失敗: {e}")
         return False
 
 
