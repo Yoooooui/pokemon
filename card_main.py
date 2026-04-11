@@ -22,7 +22,7 @@ logging.basicConfig(
 
 from card_analyzer import analyze, get_alert_cards, ALERT_SURGE, ALERT_HIGH
 from card_report import generate_report
-from notifier import notify_card_surge_line, notify_card_surge_gmail
+from notifier import notify_card_surge_discord, notify_card_surge_gmail
 
 
 def main():
@@ -59,7 +59,7 @@ def main():
     # 予兆カードがあれば通知
     if alert_cards and not args.no_notify:
         print("通知送信中...")
-        notify_card_surge_line(alert_cards)
+        notify_card_surge_discord(alert_cards)
         notify_card_surge_gmail(alert_cards)
 
     if not args.no_open:

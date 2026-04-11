@@ -12,121 +12,36 @@ from dotenv import load_dotenv
 load_dotenv()
 logger = logging.getLogger(__name__)
 
-LINE_PUSH_API = "https://api.line.me/v2/bot/message/push"
-LINE_MULTICAST_API = "https://api.line.me/v2/bot/message/multicast"
-LINE_TOKEN_API = "https://api.line.me/v2/oauth/accessToken"
-LINE_TOKEN_CACHE = "line_token_cache.json"
-
-
-def _get_line_access_token() -> str | None:
-    """LINE_ACCESS_TOKEN（長期）またはChannel ID+Secretからトークンを取得する"""
-    # 長期トークンが直接設定されていればそれを使う
-    direct_token = os.getenv("LINE_ACCESS_TOKEN")
-    if direct_token:
-        return direct_token
-
-    channel_id = os.getenv("LINE_CHANNEL_ID")
-    channel_secret = os.getenv("LINE_CHANNEL_SECRET")
-
-    if not channel_id or not channel_secret:
-        logger.warning("LINE_ACCESS_TOKEN または LINE_CHANNEL_ID/SECRET が設定されていません")
-        return None
-
-    # キャッシュ確認
-    if os.path.exists(LINE_TOKEN_CACHE):
-        with open(LINE_TOKEN_CACHE, "r") as f:
-            cache = json.load(f)
-        expires_at = datetime.fromisoformat(cache.get("expires_at", "2000-01-01"))
-        if datetime.now() < expires_at:
-            return cache["token"]
-
-    # 新規取得
-    try:
-        resp = requests.post(
-            LINE_TOKEN_API,
-            data={
-                "grant_type": "client_credentials",
-                "client_id": channel_id,
-                "client_secret": channel_secret,
-            },
-            timeout=15,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        token = data["access_token"]
-        expires_in = data.get("expires_in", 2592000)
-
-        expires_at = datetime.now() + timedelta(seconds=expires_in - 86400)
-        with open(LINE_TOKEN_CACHE, "w") as f:
-            json.dump({"token": token, "expires_at": expires_at.isoformat()}, f)
-
-        logger.info("LINEアクセストークンを取得しました")
-        return token
-    except requests.RequestException as e:
-        logger.error(f"LINEトークンの取得に失敗しました: {e}")
-        return None
-
 
 # ---------------------------------------------------------------------------
-# LINE Messaging API（LINE Bot）
+# Discord Webhook
 # ---------------------------------------------------------------------------
 
-def notify_line(lottery: dict) -> bool:
-    token = _get_line_access_token()
-    # カンマ区切りで複数ユーザーID指定可能 例: Uaaa,Ubbb
-    raw_ids = os.getenv("LINE_USER_IDS", "")
-    user_ids = [uid.strip() for uid in raw_ids.split(",") if uid.strip()]
-
-    if not token or not user_ids:
-        logger.warning("LINE_CHANNEL_ACCESS_TOKEN または LINE_USER_IDS が設定されていません")
+def notify_discord(lottery: dict) -> bool:
+    webhook_url = os.getenv("DISCORD_WEBHOOK_URL")
+    if not webhook_url:
+        logger.warning("DISCORD_WEBHOOK_URL が設定されていません")
         return False
 
-    messages = [
-        {
-            "type": "text",
-            "text": (
-                f"🎰 ポケモンセンター 抽選開始!\n"
-                f"【{lottery['title']}】\n"
-                f"期間: {lottery['period']}\n"
-                f"URL: {lottery['url']}"
-            ),
-        }
-    ]
-
-    if lottery.get("image"):
-        messages.append({
-            "type": "image",
-            "originalContentUrl": lottery["image"],
-            "previewImageUrl": lottery["image"],
-        })
-
-    # 1人なら push、複数なら multicast
-    if len(user_ids) == 1:
-        payload = {"to": user_ids[0], "messages": messages}
-        api_url = LINE_PUSH_API
-    else:
-        payload = {"to": user_ids, "messages": messages}
-        api_url = LINE_MULTICAST_API
+    content = (
+        f"🎰 **ポケモンセンター 抽選開始！**\n"
+        f"**{lottery['title']}**\n"
+        f"期間: {lottery['period']}\n"
+        f"{lottery['url']}"
+    )
 
     try:
         resp = requests.post(
-            api_url,
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Content-Type": "application/json",
-            },
-            json=payload,
+            webhook_url,
+            json={"content": content},
             timeout=15,
         )
         resp.raise_for_status()
-        logger.info(f"LINE通知送信完了 ({len(user_ids)}名): {lottery['title']}")
+        logger.info(f"Discord通知送信完了: {lottery['title']}")
         return True
     except requests.RequestException as e:
-        logger.error(f"LINE通知の送信に失敗しました: {e}")
+        logger.error(f"Discord通知の送信に失敗しました: {e}")
         return False
-
-
-# ---------------------------------------------------------------------------
 # Gmail
 # ---------------------------------------------------------------------------
 
@@ -269,7 +184,7 @@ def notify_calendar(lottery: dict) -> bool:
 def notify_all(lottery: dict) -> None:
     logger.info(f"通知送信開始: {lottery['title']}")
     results = {
-        "LINE": notify_line(lottery),
+        "Discord": notify_discord(lottery),
         "Gmail": notify_gmail(lottery),
         "Calendar": notify_calendar(lottery),
     }
@@ -282,60 +197,43 @@ def notify_all(lottery: dict) -> None:
 # ポケカ高騰予兆通知
 # ---------------------------------------------------------------------------
 
-def notify_card_surge_line(cards: list) -> bool:
-    """高騰予兆カードをLINEに通知"""
+def notify_card_surge_discord(cards: list) -> bool:
+    """高騰予兆カードをDiscordに通知"""
     from card_analyzer import ALERT_SURGE, ALERT_HIGH
-    token = _get_line_access_token()
-    raw_ids = os.getenv("LINE_USER_IDS", "")
-    user_ids = [uid.strip() for uid in raw_ids.split(",") if uid.strip()]
-    if not token or not user_ids:
+    webhook_url = os.getenv("DISCORD_WEBHOOK_URL")
+    if not webhook_url:
         return False
 
     surge = [c for c in cards if c.alert_level == ALERT_SURGE]
     high  = [c for c in cards if c.alert_level == ALERT_HIGH]
-
-    lines = []
-    if surge:
-        lines.append("🚨 海外価格が急騰しています（日本価格も近く上昇予測）")
-        for c in surge[:3]:
-            lines.append(
-                f"▶ {c.name_ja}（{c.name_en}）\n"
-                f"  海外: ${c.tcg_market_usd} (+{c.price_change_pct:.0f}%)\n"
-                f"  日本: {'¥'+f'{c.japan_price_jpy:,}' if c.japan_price_jpy else 'データなし'}"
-            )
-    if high:
-        lines.append("\n⚠️ 海外が日本の2倍以上のカード")
-        for c in high[:3]:
-            lines.append(
-                f"▶ {c.name_ja} — 海外 ${c.tcg_market_usd} / "
-                f"倍率 ×{c.arbitrage_ratio:.1f}"
-            )
-
-    if not lines:
+    if not surge and not high:
         return True
 
-    message = "\n".join(lines)
-    api_url = LINE_MULTICAST_API if len(user_ids) > 1 else LINE_PUSH_API
-    payload_key = "to" if len(user_ids) == 1 else "to"
-    payload = {
-        "to": user_ids[0] if len(user_ids) == 1 else user_ids,
-        "messages": [{"type": "text", "text": message}],
-    }
-    if len(user_ids) > 1:
-        api_url = LINE_MULTICAST_API
+    lines = ["🎴 **ポケカ価格速報**"]
+    if surge:
+        lines.append("🚨 **海外価格が急騰！日本価格も近く上昇予測**")
+        for c in surge[:3]:
+            lines.append(
+                f"▶ **{c.name_ja}**（{c.name_en}）\n"
+                f"　海外: ${c.tcg_market_usd} (+{c.price_change_pct:.0f}%) "
+                f"/ 日本: {'¥'+f'{c.japan_price_jpy:,}' if c.japan_price_jpy else 'データなし'}"
+            )
+    if high:
+        lines.append("⚠️ **海外が日本の2倍以上のカード**")
+        for c in high[:3]:
+            lines.append(f"▶ **{c.name_ja}** — 海外 ${c.tcg_market_usd} / ×{c.arbitrage_ratio:.1f}")
 
     try:
         resp = requests.post(
-            api_url,
-            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-            json=payload,
+            webhook_url,
+            json={"content": "\n".join(lines)},
             timeout=15,
         )
         resp.raise_for_status()
-        logger.info(f"ポケカ高騰予兆LINE通知完了 ({len(surge)}件急騰/{len(high)}件予兆)")
+        logger.info(f"ポケカ高騰予兆Discord通知完了 ({len(surge)}件急騰/{len(high)}件予兆)")
         return True
     except requests.RequestException as e:
-        logger.error(f"ポケカ高騰予兆LINE通知失敗: {e}")
+        logger.error(f"ポケカ高騰予兆Discord通知失敗: {e}")
         return False
 
 
